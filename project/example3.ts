@@ -6,6 +6,35 @@ import { loadIfc } from "../buttons";
 import { classificationTree } from "../tables/ClassificationsTree";
 import * as CUI from "@thatopen/ui-obc"
 
+let currentLine: THREE.Line | null = null;
+let lineGeometry: THREE.BufferGeometry | null = null;
+let lineMaterial: THREE.LineBasicMaterial | null = null;
+let measurementDiv: HTMLDivElement | null = null;
+
+
+// Initialize line material
+lineMaterial = new THREE.LineBasicMaterial({ 
+  color: 0xff0000,
+  depthTest: false,
+  depthWrite: false,
+  transparent: true,
+  opacity: 1.0,
+  linewidth: 3
+});lineGeometry = new THREE.BufferGeometry();
+
+// Add these declarations at the top
+let currentTube: THREE.Mesh | null = null;
+const TUBE_RADIUS = 0.05; // Adjust this value to change line thickness
+
+const toScreenPosition = (point: THREE.Vector3, camera: THREE.Camera, viewport: HTMLElement) => {
+  const vector = point.clone();
+  vector.project(camera);
+  
+  const x = ((vector.x + 1) / 2) * viewport.clientWidth;
+  const y = ((-vector.y + 1) / 2) * viewport.clientHeight;
+  
+  return { x, y };
+};
 
 const clippingPlanes = {
   front: new THREE.Plane(new THREE.Vector3(0, 0, 1), 1000),
@@ -29,6 +58,7 @@ const clippingStates = {
 const MIN_ZOOM = 0.01;
 const MAX_ZOOM = 0.5;
 //const ZOOM_SPEED = 0.001;
+const DEBUG = true;
 
 // Add styles for the popup
 const style = document.createElement('style');
@@ -296,25 +326,346 @@ cameraComponent.three.addEventListener('change', () => {
   requestAnimationFrame(updateMapzoom);
 });
 
+const dimensions = components.get(OBCF.LengthMeasurement);
+dimensions.world = world;
+dimensions.enabled = false;
+dimensions.snapDistance = 0.5;
+dimensions.visible = true;
+dimensions.color.set("#ff0000");
+
+// Add measurement event handling
+let startPoint: THREE.Vector3 | null = null;
+let measurementLine: THREE.Line | null = null;
+let measurementLabel: HTMLDivElement | null = null;
+
+const labelContainer = document.createElement('div');
+labelContainer.style.position = 'absolute';
+labelContainer.style.top = '0';
+labelContainer.style.left = '0';
+labelContainer.style.width = '100%';
+labelContainer.style.height = '100%';
+labelContainer.style.pointerEvents = 'none';
+labelContainer.style.zIndex = '1000';
+viewport.appendChild(labelContainer);
+
+// Update measurement type
+type Measurement = {
+  tube: THREE.Mesh;
+  label: HTMLDivElement;
+  distance: number;
+};
+
+let measurements: Measurement[] = [];
+
+
+const measurementStyle = document.createElement('style');
+measurementStyle.textContent = `
+  .measurement-label {
+    position: absolute;
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    pointer-events: none;
+    z-index: 1000;
+    transform: translate(-50%, -100%);
+    white-space: nowrap;
+  }
+`;
+document.head.appendChild(measurementStyle);
+
+// Add this function to update label positions
+// Update label positions
+const updateMeasurementLabels = () => {
+  measurements.forEach(({ tube, label, distance }) => {
+    const positions = tube.geometry.getAttribute('position').array;
+    const endPoint = new THREE.Vector3(positions[3], positions[4], positions[5]);
+    
+    // Project point to screen space
+    const screenPos = toScreenPosition(endPoint, world.camera.three, viewport);
+    
+    // Update label position and ensure it's visible
+    label.style.left = `${screenPos.x}px`;
+    label.style.top = `${screenPos.y}px`;
+    label.style.display = 'block';
+    label.textContent = `${distance.toFixed(2)} units`;
+  });
+};
+
+// Simplified mousemove handler
+viewport.addEventListener('mousemove', (event) => {
+  if (!dimensions.enabled || !startPoint) return;
+
+  const rect = viewport.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / viewport.clientWidth) * 2 - 1;
+  const y = -((event.clientY - rect.top) / viewport.clientHeight) * 2 + 1;
+  
+  const mouse = new THREE.Vector2(x, y);
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, world.camera.three);
+  const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+
+  if (intersects.length > 0) {
+    const currentPoint = intersects[0].point;
+    
+    if (!currentTube) {
+      const curve = new THREE.LineCurve3(startPoint, currentPoint);
+      const geometry = new THREE.TubeGeometry(curve, 1, TUBE_RADIUS, 8, false);
+      currentTube = new THREE.Mesh(geometry, lineMaterial);
+      currentTube.renderOrder = 999;
+      world.scene.three.add(currentTube);
+    } else {
+      const curve = new THREE.LineCurve3(startPoint, currentPoint);
+      const geometry = new THREE.TubeGeometry(curve, 1, TUBE_RADIUS, 8, false);
+      currentTube.geometry.dispose();
+      currentTube.geometry = geometry;
+    }
+
+    if (!measurementDiv) {
+      measurementDiv = document.createElement('div');
+      measurementDiv.className = 'measurement-label';
+      document.body.appendChild(measurementDiv);
+    }
+
+    const distance = startPoint.distanceTo(currentPoint);
+    measurementDiv.textContent = `${distance.toFixed(2)} units`;
+
+    // Position label at current point (endpoint)
+    const screenPos = toScreenPosition(currentPoint, world.camera.three, viewport);
+    measurementDiv.style.left = `${screenPos.x}px`;
+    measurementDiv.style.top = `${screenPos.y}px`;
+  }
+});
+
+// Update click handler
+viewport.addEventListener('click', (event) => {
+  if (!dimensions.enabled) return;
+
+  const rect = viewport.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / viewport.clientWidth) * 2 - 1;
+  const y = -((event.clientY - rect.top) / viewport.clientHeight) * 2 + 1;
+  
+  const mouse = new THREE.Vector2(x, y);
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, world.camera.three);
+  const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+  
+  if (intersects.length > 0) {
+    const point = intersects[0].point;
+    
+    if (!startPoint) {
+      startPoint = point;
+    } else {
+      const distance = startPoint.distanceTo(point);
+      
+      // Create tube
+      const curve = new THREE.LineCurve3(startPoint, point);
+      const geometry = new THREE.TubeGeometry(curve, 1, TUBE_RADIUS, 8, false);
+      const tube = new THREE.Mesh(geometry, lineMaterial.clone());
+      tube.renderOrder = 999;
+      world.scene.three.add(tube);
+
+      // Create label
+      const label = document.createElement('div');
+      label.className = 'measurement-label';
+      label.textContent = `${distance.toFixed(2)} units`;
+      labelContainer.appendChild(label);
+
+      // Store measurement
+      measurements.push({ tube, label, distance });
+      
+      // Clean up temporary elements
+      if (currentTube) {
+        world.scene.three.remove(currentTube);
+        currentTube.geometry.dispose();
+        currentTube = null;
+      }
+      if (measurementDiv && measurementDiv.parentNode) {
+        measurementDiv.parentNode.removeChild(measurementDiv);
+        measurementDiv = null;
+      }
+      startPoint = null;
+
+      // Update labels
+      updateMeasurementLabels();
+    }
+  }
+});
+
+// Update delete handler
+window.addEventListener('keydown', (event) => {
+  if (event.code === "Delete" || event.code === "Backspace") {
+    measurements.forEach(({ tube, label }) => {
+      world.scene.three.remove(tube);
+      tube.geometry.dispose();
+      if (label.parentNode) {
+        label.parentNode.removeChild(label);
+      }
+    });
+    measurements = [];
+    
+    if (currentTube) {
+      world.scene.three.remove(currentTube);
+      currentTube.geometry.dispose();
+      currentTube = null;
+    }
+    if (measurementDiv && measurementDiv.parentNode) {
+      measurementDiv.parentNode.removeChild(measurementDiv);
+      measurementDiv = null;
+    }
+    startPoint = null;
+  }
+});
+
+// Make sure we update labels on camera change
+cameraComponent.controls.addEventListener('update', () => {
+  requestAnimationFrame(updateMeasurementLabels);
+});
+
+// Add render loop update
+rendererComponent.onBeforeUpdate.add(() => {
+  updateMeasurementLabels();
+});
+
+// Update labels on window resize
+window.addEventListener('resize', () => {
+  requestAnimationFrame(updateMeasurementLabels);
+});
+
+
+fragmentsManager.onFragmentsLoaded.add((model) => {
+  if (world.scene) {
+    world.scene.three.add(model);
+    updateMaterialClipping();
+    if (DEBUG) console.log("Model loaded - measurements configured");
+  }
+});
+
+const collapseButtonStyle = document.createElement('style');
+collapseButtonStyle.textContent = `
+  .collapse-button {
+    position: absolute;
+    right: -25px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.2);
+    transition: background-color 0.2s;
+  }
+
+  .collapse-button:hover {
+    background-color: #f0f0f0;
+  }
+
+  bim-panel {
+    overflow: visible !important;
+  }
+`;
+document.head.appendChild(collapseButtonStyle);
+
+const app = document.createElement("bim-grid");
+app.style.width = '100vw';
+app.style.height = '100vh';
+app.style.display = 'grid';
+
+// Add styles for viewport and panel
+const layoutStyle = document.createElement('style');
+layoutStyle.textContent = `
+  bim-viewport {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  bim-panel {
+    height: 100%;
+    transition: width 0.3s ease;
+  }
+`;
+document.head.appendChild(layoutStyle);
+
+
+
 const panel = BUI.Component.create(() => {
   const [loadIfcBtn] = loadIfc({ components });
 
   return BUI.html`
-   <bim-panel label="Model Inspector">
-    <bim-panel-section label="Import">
-      ${loadIfcBtn}
-    </bim-panel-section>
-    <bim-panel-section label="Interaction Settings">
-      <bim-checkbox checked="true" label="Show Properties & Zoom" 
-        @change="${({ target }: { target: BUI.Checkbox }) => {
-          showPropertiesEnabled = target.value;
-          highlighter.zoomToSelection = target.value;
-          if (!target.value && popup) {
-            popup.style.display = 'none';
-          }
-        }}">  
-      </bim-checkbox>
-    </bim-panel-section>
+   <bim-panel label="Model Inspector" style="position: relative; overflow: hidden;">
+      <button class="collapse-button" @click="${(e: MouseEvent) => {
+        const panelElement = document.querySelector('bim-panel');
+        const gridElement = document.querySelector('bim-grid');
+        const button = e.currentTarget as HTMLButtonElement;
+        
+        if (!panelElement || !gridElement) {
+          console.error('Required elements not found');
+          return;
+        }
+      
+        const isCollapsed = panelElement.style.width === '0px';
+        
+        if (isCollapsed) {
+          panelElement.style.width = '23rem';
+          button.innerHTML = '◀';
+          gridElement.style.gridTemplateColumns = '23rem 1fr';
+        } else {
+          panelElement.style.width = '0px';
+          button.innerHTML = '▶';
+          gridElement.style.gridTemplateColumns = '0 1fr';
+        }
+        
+        window.dispatchEvent(new Event('resize'));
+        rendererComponent.resize();
+        cameraComponent.updateAspect();
+      }}">◀</button>
+      <div>
+        <bim-panel-section label="Import">
+          ${loadIfcBtn}
+        </bim-panel-section>
+        <bim-panel-section label="Interaction Settings">
+          <bim-checkbox checked="true" label="Show Properties & Zoom" 
+            @change="${({ target }: { target: BUI.Checkbox }) => {
+              showPropertiesEnabled = target.value;
+              highlighter.zoomToSelection = target.value;
+              if (!target.value && popup) {
+                popup.style.display = 'none';
+              }
+            }}">  
+          </bim-checkbox>
+        </bim-panel-section>
+        
+        <!-- Add new Measurements section -->
+        <bim-panel-section label="Measurements">
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <bim-checkbox label="Enable Measurements" 
+              @change="${({ target }: { target: BUI.Checkbox }) => {
+                dimensions.enabled = target.value;
+              }}">
+            </bim-checkbox>
+            <bim-color-input 
+              label="Measurement Color" color="#202932" 
+              @input="${({ target }: { target: BUI.ColorInput }) => {
+                dimensions.color.set(target.color);
+              }}">
+            </bim-color-input>
+            <bim-button label="Delete All Measurements"
+              @click="${() => dimensions.deleteAll()}">
+            </bim-button>
+            <bim-label>Double click to measure</bim-label>
+            <bim-label>Press Delete to remove measurement</bim-label>
+          </div>
+        </bim-panel-section>
     <bim-panel-section label="Clipping Planes">
       <div style="display: flex; flex-direction: column; gap: 8px;">
         <!-- X-Axis Controls -->
@@ -476,7 +827,6 @@ const panel = BUI.Component.create(() => {
 });
 
 // Setup main application layout
-const app = document.createElement("bim-grid");
 app.layouts = {
   main: {
     template: `
