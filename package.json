@@ -1,0 +1,28 @@
+{
+  "name": "bim_viewer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@thatopen/components": "^2.3.11",
+    "@thatopen/components-front": "^2.3.7",
+    "@thatopen/fragments": "^2.3.0",
+    "@thatopen/ui": "^2.3.0",
+    "@thatopen/ui-obc": "^2.3.3",
+    "stats": "^1.0.0",
+    "stats.js": "^0.17.0",
+    "three": "^0.160.1",
+    "web-ifc": "^0.0.59"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.7",
+    "vite": "^5.4.9"
+  }
+}

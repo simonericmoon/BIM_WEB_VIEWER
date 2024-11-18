@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IFC Viewer Application</title>
+    <style>
+        body, html { 
+            margin: 0; 
+            padding: 0; 
+            height: 100%; 
+            font-family: Arial, sans-serif;
+        }
+        #container { 
+            width: 100%; 
+            height: 100%; 
+        }
+        .options-menu {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+        }
+        .phone-menu-toggler {
+            display: none;
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1001;
+        }
+        @media (max-width: 768px) {
+            .options-menu {
+                display: none;
+            }
+            .options-menu-visible {
+                display: block;
+            }
+            .phone-menu-toggler {
+                display: block;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="ui-container"></div>
+    <script type="module" src="./example3.ts"></script>
+</body>
+</html>
