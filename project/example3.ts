@@ -766,33 +766,55 @@ layoutStyle.textContent = `
   bim-panel {
     height: 100%;
     transition: width 0.3s ease;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
+    position: relative;
   }
 
   bim-panel > div {
     height: 100%;
     overflow-y: auto;
-    padding-right: 8px; /* Add some padding for the scrollbar */
+    padding-right: 8px;
   }
 
   /* Style the scrollbar */
-  bim-panel::-webkit-scrollbar {
+  bim-panel > div::-webkit-scrollbar {
     width: 8px;
   }
 
-  bim-panel::-webkit-scrollbar-track {
+  bim-panel > div::-webkit-scrollbar-track {
     background: #f1f1f1;
     border-radius: 4px;
   }
 
-  bim-panel::-webkit-scrollbar-thumb {
+  bim-panel > div::-webkit-scrollbar-thumb {
     background: #888;
     border-radius: 4px;
   }
 
-  bim-panel::-webkit-scrollbar-thumb:hover {
+  bim-panel > div::-webkit-scrollbar-thumb:hover {
     background: #555;
+  }
+
+  .collapse-button {
+    position: absolute;
+    right: -25px;
+    top: 10px;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.2);
+    transition: background-color 0.2s;
+  }
+
+  .collapse-button:hover {
+    background-color: #f0f0f0;
   }
 `;
 document.head.appendChild(layoutStyle);
@@ -1158,37 +1180,12 @@ const panel = BUI.Component.create(() => {
   const [loadIfcBtn] = loadIfc({ components });
 
   return BUI.html`
-   <bim-panel label="Model Inspector" style="position: relative; overflow: hidden;">
-      <button class="collapse-button" @click="${(e: MouseEvent) => {
-        const panelElement = document.querySelector('bim-panel');
-        const gridElement = document.querySelector('bim-grid');
-        const button = e.currentTarget as HTMLButtonElement;
-        
-        if (!panelElement || !gridElement) {
-          console.error('Required elements not found');
-          return;
-        }
-      
-        const isCollapsed = panelElement.style.width === '0px';
-        
-        if (isCollapsed) {
-          panelElement.style.width = '23rem';
-          button.innerHTML = '◀';
-          gridElement.style.gridTemplateColumns = '23rem 1fr';
-        } else {
-          panelElement.style.width = '0px';
-          button.innerHTML = '▶';
-          gridElement.style.gridTemplateColumns = '0 1fr';
-        }
-        
-        window.dispatchEvent(new Event('resize'));
-        rendererComponent.resize();
-        cameraComponent.updateAspect();
-      }}">◀</button>
-      <div>
-        <bim-panel-section label="Import">
-          ${loadIfcBtn}
-        </bim-panel-section>
+   <div style="position: relative; height: 100%; width: 100%;">
+     <bim-panel label="Model Inspector">
+        <div style="height: 100%; overflow-y: auto; padding-right: 8px;">
+          <bim-panel-section label="Import">
+            ${loadIfcBtn}
+          </bim-panel-section>
         <bim-panel-section label="Interaction Settings">
           <bim-checkbox checked="true" label="Show Properties & Zoom" 
             @change="${({ target }: { target: BUI.Checkbox }) => {
@@ -1398,7 +1395,34 @@ const panel = BUI.Component.create(() => {
         </bim-number-input>
       </div>
     </bim-panel-section>
-   </bim-panel> 
+   </bim-panel>
+   <button class="collapse-button" @click="${(e: MouseEvent) => {
+    const panelElement = document.querySelector('bim-panel');
+    const gridElement = document.querySelector('bim-grid');
+    const button = e.currentTarget as HTMLButtonElement;
+    
+    if (!panelElement || !gridElement) {
+      console.error('Required elements not found');
+      return;
+    }
+  
+    const isCollapsed = panelElement.style.width === '0px';
+    
+    if (isCollapsed) {
+      panelElement.style.width = '23rem';
+      button.innerHTML = '◀';
+      gridElement.style.gridTemplateColumns = '23rem 1fr';
+    } else {
+      panelElement.style.width = '0px';
+      button.innerHTML = '▶';
+      gridElement.style.gridTemplateColumns = '0 1fr';
+    }
+    
+    window.dispatchEvent(new Event('resize'));
+    rendererComponent.resize();
+    cameraComponent.updateAspect();
+  }}">◀</button>
+</div>
   `;
 });
 

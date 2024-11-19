@@ -1,16 +1,18 @@
 import { defineConfig } from 'vite';
 import path from 'path';
+import basicSsl from '@vitejs/plugin-basic-ssl';
 
-export default defineConfig({ // for arch: sudo systemctl stop firewalld, for ubuntu: sudo ufw disable 
+export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    https: {} // Changed from true to empty object to satisfy TypeScript
   },
-
-  root: './project', // This tells Vite to use the project directory as root
+  plugins: [basicSsl()],
+  root: './project',
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './'),
-    },
-  },
+      '@': path.resolve(__dirname, './')
+    }
+  }
 });
