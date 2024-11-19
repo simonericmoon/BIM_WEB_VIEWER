@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@loaders.gl/las": "^4.3.2",
     "@thatopen/components": "^2.3.11",
     "@thatopen/components-front": "^2.3.7",
     "@thatopen/fragments": "^2.3.0",

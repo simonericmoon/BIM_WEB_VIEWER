@@ -6,6 +6,142 @@ import { loadIfc } from "../buttons";
 import { classificationTree } from "../tables/ClassificationsTree";
 import * as CUI from "@thatopen/ui-obc"
 
+let currentLine: THREE.Line | null = null;
+let lineGeometry: THREE.BufferGeometry | null = null;
+let lineMaterial: THREE.LineBasicMaterial | null = null;
+let measurementDiv: HTMLDivElement | null = null;
+
+class LayerManager {
+  layers: Map<string, { id: string; name: string; visible: boolean; objects: THREE.Object3D[] }> = new Map();
+
+  createLayer(id: string, name: string) {
+    this.layers.set(id, { id, name, visible: true, objects: [] });
+  }
+
+  addToLayer(layerId: string, object: THREE.Object3D) {
+    const layer = this.layers.get(layerId);
+    if (layer) {
+      layer.objects.push(object);
+      this.updateVisibility(layerId);
+    }
+  }
+
+  setLayerVisibility(layerId: string, visible: boolean) {
+    const layer = this.layers.get(layerId);
+    if (layer) {
+      layer.visible = visible;
+      this.updateVisibility(layerId);
+    }
+  }
+
+  private updateVisibility(layerId: string) {
+    const layer = this.layers.get(layerId);
+    if (layer) {
+      layer.objects.forEach(obj => obj.visible = layer.visible);
+    }
+  }
+}
+
+class ElementSearchSystem {
+  private elements: Map<string, any> = new Map();
+
+  addElement(id: string, properties: any) {
+    this.elements.set(id, properties);
+  }
+
+  search(query: string): { [key: string]: any }[] {
+    const results: { [key: string]: any }[] = [];
+    for (const [id, props] of this.elements) {
+      if (this.matchesSearch(props, query.toLowerCase())) {
+        results.push({ id, ...props });
+      }
+    }
+    return results;
+  }
+
+  private matchesSearch(properties: any, query: string): boolean {
+    return Object.values(properties).some(value => 
+      String(value).toLowerCase().includes(query)
+    );
+  }
+}
+
+class AnnotationSystem {
+  private annotations: Map<string, {
+    id: string;
+    position: THREE.Vector3;
+    content: string;
+    element?: HTMLDivElement;
+  }> = new Map();
+  
+  constructor(private container: HTMLElement) {
+    const annotationContainer = document.createElement('div');
+    annotationContainer.className = 'annotation-container';
+    container.appendChild(annotationContainer);
+    this.container = annotationContainer;
+  }
+
+  addAnnotation(position: THREE.Vector3, content: string): string {
+    const id = crypto.randomUUID();
+    const element = document.createElement('div');
+    element.className = 'annotation';
+    element.innerHTML = `
+      <div class="annotation-marker">📌</div>
+      <div class="annotation-content">${content}</div>
+    `;
+    
+    this.container.appendChild(element);
+    this.annotations.set(id, { id, position, content, element });
+    return id;
+  }
+
+  updatePositions(camera: THREE.Camera) {
+    this.annotations.forEach(annotation => {
+      if (annotation.element) {
+        const vector = annotation.position.clone();
+        vector.project(camera);
+        
+        const x = ((vector.x + 1) / 2) * this.container.clientWidth;
+        const y = ((-vector.y + 1) / 2) * this.container.clientHeight;
+        
+        annotation.element.style.transform = `translate(${x}px, ${y}px)`;
+        annotation.element.style.display = vector.z < 1 ? 'block' : 'none';
+      }
+    });
+  }
+
+  clear() {
+    this.annotations.forEach(annotation => {
+      annotation.element?.remove();
+    });
+    this.annotations.clear();
+  }
+}
+
+
+// Initialize line material
+lineMaterial = new THREE.LineBasicMaterial({ 
+  color: 0xff0000,
+  depthTest: false,
+  depthWrite: false,
+  transparent: true,
+  opacity: 1.0,
+  linewidth: 3
+});lineGeometry = new THREE.BufferGeometry();
+
+// Add these declarations at the top
+let currentTube: THREE.Mesh | null = null;
+const TUBE_RADIUS = 0.05; // Adjust this value to change line thickness
+
+const toScreenPosition = (point: THREE.Vector3, camera: THREE.Camera, viewport: HTMLElement) => {
+  const vector = point.clone();
+  vector.project(camera);
+  
+  const x = ((vector.x + 1) / 2) * viewport.clientWidth;
+  const y = ((-vector.y + 1) / 2) * viewport.clientHeight;
+  
+  return { x, y };
+};
 
 const clippingPlanes = {
   front: new THREE.Plane(new THREE.Vector3(0, 0, 1), 1000),
@@ -29,6 +165,7 @@ const clippingStates = {
 const MIN_ZOOM = 0.01;
 const MAX_ZOOM = 0.5;
 //const ZOOM_SPEED = 0.001;
+const DEBUG = true;
 
 // Add styles for the popup
 const style = document.createElement('style');
@@ -296,7 +433,285 @@ cameraComponent.three.addEventListener('change', () => {
   requestAnimationFrame(updateMapzoom);
 });
 
+const layerManager = new LayerManager();
+const searchSystem = new ElementSearchSystem();
+const annotationSystem = new AnnotationSystem(viewport);
 
+// 4. Add camera presets
+const cameraPresets = {
+  front: () => cameraComponent.controls.setLookAt(0, 0, 10, 0, 0, 0),
+  back: () => cameraComponent.controls.setLookAt(0, 0, -10, 0, 0, 0),
+  top: () => cameraComponent.controls.setLookAt(0, 10, 0, 0, 0, 0),
+  bottom: () => cameraComponent.controls.setLookAt(0, -10, 0, 0, 0, 0),
+  left: () => cameraComponent.controls.setLookAt(-10, 0, 0, 0, 0, 0),
+  right: () => cameraComponent.controls.setLookAt(10, 0, 0, 0, 0, 0)
+};
+
+const newStyles = document.createElement('style');
+newStyles.textContent = `
+  .annotation-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  .annotation {
+    position: absolute;
+    pointer-events: all;
+    cursor: pointer;
+  }
+
+  .annotation-marker {
+    font-size: 24px;
+  }
+
+  .annotation-content {
+    position: absolute;
+    background: white;
+    padding: 8px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    display: none;
+    white-space: nowrap;
+    z-index: 1000;
+  }
+
+  .annotation:hover .annotation-content {
+    display: block;
+  }
+
+  .search-result {
+    padding: 4px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+  }
+
+  .search-result:hover {
+    background: #f5f5f5;
+  }
+`;
+document.head.appendChild(newStyles);
+
+const dimensions = components.get(OBCF.LengthMeasurement);
+dimensions.world = world;
+dimensions.enabled = false;
+dimensions.snapDistance = 0.5;
+dimensions.visible = true;
+dimensions.color.set("#ff0000");
+
+// Add measurement event handling
+let startPoint: THREE.Vector3 | null = null;
+let measurementLine: THREE.Line | null = null;
+let measurementLabel: HTMLDivElement | null = null;
+
+const labelContainer = document.createElement('div');
+labelContainer.style.position = 'absolute';
+labelContainer.style.top = '0';
+labelContainer.style.left = '0';
+labelContainer.style.width = '100%';
+labelContainer.style.height = '100%';
+labelContainer.style.pointerEvents = 'none';
+labelContainer.style.zIndex = '1000';
+viewport.appendChild(labelContainer);
+
+// Update measurement type
+type Measurement = {
+  tube: THREE.Mesh;
+  label: HTMLDivElement;
+  distance: number;
+};
+
+let measurements: Measurement[] = [];
+
+
+const measurementStyle = document.createElement('style');
+measurementStyle.textContent = `
+  .measurement-label {
+    position: absolute;
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    pointer-events: none;
+    z-index: 1000;
+    transform: translate(-50%, -100%);
+    white-space: nowrap;
+  }
+`;
+document.head.appendChild(measurementStyle);
+
+// Add this function to update label positions
+// Update label positions
+const updateMeasurementLabels = () => {
+  measurements.forEach(({ tube, label, distance }) => {
+    const positions = tube.geometry.getAttribute('position').array;
+    const endPoint = new THREE.Vector3(positions[3], positions[4], positions[5]);
+    
+    // Project point to screen space
+    const screenPos = toScreenPosition(endPoint, world.camera.three, viewport);
+    
+    // Update label position and ensure it's visible
+    label.style.left = `${screenPos.x}px`;
+    label.style.top = `${screenPos.y}px`;
+    label.style.display = 'block';
+    label.textContent = `${distance.toFixed(2)} units`;
+  });
+};
+
+// Simplified mousemove handler
+viewport.addEventListener('mousemove', (event) => {
+  if (!dimensions.enabled || !startPoint) return;
+
+  const rect = viewport.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / viewport.clientWidth) * 2 - 1;
+  const y = -((event.clientY - rect.top) / viewport.clientHeight) * 2 + 1;
+  
+  const mouse = new THREE.Vector2(x, y);
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, world.camera.three);
+  const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+
+  if (intersects.length > 0) {
+    const currentPoint = intersects[0].point;
+    
+    if (!currentTube) {
+      const curve = new THREE.LineCurve3(startPoint, currentPoint);
+      const geometry = new THREE.TubeGeometry(curve, 1, TUBE_RADIUS, 8, false);
+      currentTube = new THREE.Mesh(geometry, lineMaterial);
+      currentTube.renderOrder = 999;
+      world.scene.three.add(currentTube);
+    } else {
+      const curve = new THREE.LineCurve3(startPoint, currentPoint);
+      const geometry = new THREE.TubeGeometry(curve, 1, TUBE_RADIUS, 8, false);
+      currentTube.geometry.dispose();
+      currentTube.geometry = geometry;
+    }
+
+    if (!measurementDiv) {
+      measurementDiv = document.createElement('div');
+      measurementDiv.className = 'measurement-label';
+      document.body.appendChild(measurementDiv);
+    }
+
+    const distance = startPoint.distanceTo(currentPoint);
+    measurementDiv.textContent = `${distance.toFixed(2)} units`;
+
+    // Position label at current point (endpoint)
+    const screenPos = toScreenPosition(currentPoint, world.camera.three, viewport);
+    measurementDiv.style.left = `${screenPos.x}px`;
+    measurementDiv.style.top = `${screenPos.y}px`;
+  }
+});
+
+// Update click handler
+viewport.addEventListener('click', (event) => {
+  if (!dimensions.enabled) return;
+
+  const rect = viewport.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / viewport.clientWidth) * 2 - 1;
+  const y = -((event.clientY - rect.top) / viewport.clientHeight) * 2 + 1;
+  
+  const mouse = new THREE.Vector2(x, y);
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, world.camera.three);
+  const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+  
+  if (intersects.length > 0) {
+    const point = intersects[0].point;
+    
+    if (!startPoint) {
+      startPoint = point;
+    } else {
+      const distance = startPoint.distanceTo(point);
+      
+      // Create tube
+      const curve = new THREE.LineCurve3(startPoint, point);
+      const geometry = new THREE.TubeGeometry(curve, 1, TUBE_RADIUS, 8, false);
+      const tube = new THREE.Mesh(geometry, lineMaterial.clone());
+      tube.renderOrder = 999;
+      world.scene.three.add(tube);
+
+      // Create label
+      const label = document.createElement('div');
+      label.className = 'measurement-label';
+      label.textContent = `${distance.toFixed(2)} units`;
+      labelContainer.appendChild(label);
+
+      // Store measurement
+      measurements.push({ tube, label, distance });
+      
+      // Clean up temporary elements
+      if (currentTube) {
+        world.scene.three.remove(currentTube);
+        currentTube.geometry.dispose();
+        currentTube = null;
+      }
+      if (measurementDiv && measurementDiv.parentNode) {
+        measurementDiv.parentNode.removeChild(measurementDiv);
+        measurementDiv = null;
+      }
+      startPoint = null;
+
+      // Update labels
+      updateMeasurementLabels();
+    }
+  }
+});
+
+// Update delete handler
+window.addEventListener('keydown', (event) => {
+  if (event.code === "Delete" || event.code === "Backspace") {
+    measurements.forEach(({ tube, label }) => {
+      world.scene.three.remove(tube);
+      tube.geometry.dispose();
+      if (label.parentNode) {
+        label.parentNode.removeChild(label);
+      }
+    });
+    measurements = [];
+    
+    if (currentTube) {
+      world.scene.three.remove(currentTube);
+      currentTube.geometry.dispose();
+      currentTube = null;
+    }
+    if (measurementDiv && measurementDiv.parentNode) {
+      measurementDiv.parentNode.removeChild(measurementDiv);
+      measurementDiv = null;
+    }
+    startPoint = null;
+  }
+});
+
+// Make sure we update labels on camera change
+cameraComponent.controls.addEventListener('update', () => {
+  requestAnimationFrame(updateMeasurementLabels);
+});
+
+// Add render loop update
+rendererComponent.onBeforeUpdate.add(() => {
+  updateMeasurementLabels();
+});
+
+// Update labels on window resize
+window.addEventListener('resize', () => {
+  requestAnimationFrame(updateMeasurementLabels);
+});
+
+
+fragmentsManager.onFragmentsLoaded.add((model) => {
+  if (world.scene) {
+    world.scene.three.add(model);
+    updateMaterialClipping();
+    if (DEBUG) console.log("Model loaded - measurements configured");
+  }
+});
 
 const collapseButtonStyle = document.createElement('style');
 collapseButtonStyle.textContent = `
@@ -380,7 +795,6 @@ const panel = BUI.Component.create(() => {
           gridElement.style.gridTemplateColumns = '0 1fr';
         }
         
-        // Trigger resize events
         window.dispatchEvent(new Event('resize'));
         rendererComponent.resize();
         cameraComponent.updateAspect();
@@ -389,17 +803,65 @@ const panel = BUI.Component.create(() => {
         <bim-panel-section label="Import">
           ${loadIfcBtn}
         </bim-panel-section>
-    <bim-panel-section label="Interaction Settings">
-      <bim-checkbox checked="true" label="Show Properties & Zoom" 
-        @change="${({ target }: { target: BUI.Checkbox }) => {
-          showPropertiesEnabled = target.value;
-          highlighter.zoomToSelection = target.value;
-          if (!target.value && popup) {
-            popup.style.display = 'none';
-          }
-        }}">  
-      </bim-checkbox>
-    </bim-panel-section>
+        <bim-panel-section label="Interaction Settings">
+          <bim-checkbox checked="true" label="Show Properties & Zoom" 
+            @change="${({ target }: { target: BUI.Checkbox }) => {
+              showPropertiesEnabled = target.value;
+              highlighter.zoomToSelection = target.value;
+              if (!target.value && popup) {
+                popup.style.display = 'none';
+              }
+            }}">  
+          </bim-checkbox>
+        </bim-panel-section>
+        
+        <!-- Add new Measurements section -->
+        <bim-panel-section label="Measurements">
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <bim-checkbox label="Enable Measurements" 
+              @change="${({ target }: { target: BUI.Checkbox }) => {
+                dimensions.enabled = target.value;
+              }}">
+            </bim-checkbox>
+            <bim-color-input 
+              label="Measurement Color" color="#202932" 
+              @input="${({ target }: { target: BUI.ColorInput }) => {
+                dimensions.color.set(target.color);
+              }}">
+            </bim-color-input>
+            <bim-button label="Delete All Measurements"
+              @click="${() => dimensions.deleteAll()}">
+            </bim-button>
+            <bim-label>Double click to measure</bim-label>
+            <bim-label>Press Delete to remove measurement</bim-label>
+          </div>
+        </bim-panel-section>
+
+        <!-- Add new Navigation section -->
+      <bim-panel-section label="Navigation">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <bim-button label="Front" @click="${cameraPresets.front}"></bim-button>
+          <bim-button label="Back" @click="${cameraPresets.back}"></bim-button>
+          <bim-button label="Top" @click="${cameraPresets.top}"></bim-button>
+          <bim-button label="Bottom" @click="${cameraPresets.bottom}"></bim-button>
+          <bim-button label="Left" @click="${cameraPresets.left}"></bim-button>
+          <bim-button label="Right" @click="${cameraPresets.right}"></bim-button>
+        </div>
+      </bim-panel-section>
+      <!-- Add Annotations section -->
+      <bim-panel-section label="Annotations">
+        <div style="display: flex; gap: 8px;">
+          <bim-button label="Add Annotation" 
+            @click="${() => {
+              viewport.style.cursor = 'crosshair';
+              enableAnnotationMode();
+            }}">
+          </bim-button>
+          <bim-button label="Clear All" 
+            @click="${() => annotationSystem.clear()}">
+          </bim-button>
+        </div>
+      </bim-panel-section>
     <bim-panel-section label="Clipping Planes">
       <div style="display: flex; flex-direction: column; gap: 8px;">
         <!-- X-Axis Controls -->
@@ -506,17 +968,7 @@ const panel = BUI.Component.create(() => {
       ${classificationsTree}
     </bim-panel-section>
     <bim-panel-section collapsed label="Minimap Controls">
-      <bim-checkbox checked="true" label="Enabled" 
-        @change="${({ target }: { target: BUI.Checkbox }) => {
-          map.enabled = target.value;
-        }}">  
-      </bim-checkbox>
       
-      <bim-checkbox checked="true" label="Visible" 
-        @change="${({ target }: { target: BUI.Checkbox }) => {
-          map.config.visible = target.value;
-        }}">  
-      </bim-checkbox>
       
       <bim-checkbox checked label="Lock rotation" 
         @change="${({ target }: { target: BUI.Checkbox }) => {
@@ -558,6 +1010,49 @@ const panel = BUI.Component.create(() => {
     </bim-panel-section>
    </bim-panel> 
   `;
+});
+
+
+
+let annotationMode = false;
+
+function enableAnnotationMode() {
+  annotationMode = true;
+  
+  const handleClick = (event: MouseEvent) => {
+    if (!annotationMode) {
+      viewport.removeEventListener('click', handleClick);
+      return;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / viewport.clientWidth) * 2 - 1;
+    const y = -((event.clientY - rect.top) / viewport.clientHeight) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), world.camera.three);
+    const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+
+    if (intersects.length > 0) {
+      const point = intersects[0].point;
+      const content = prompt('Enter annotation text:');
+      if (content) {
+        annotationSystem.addAnnotation(point, content);
+      }
+    }
+
+    annotationMode = false;
+    viewport.style.cursor = 'default';
+    viewport.removeEventListener('click', handleClick);
+  };
+
+  viewport.addEventListener('click', handleClick);
+}
+
+
+// Add to your render loop
+rendererComponent.onBeforeUpdate.add(() => {
+  annotationSystem.updatePositions(world.camera.three);
 });
 
 // Setup main application layout

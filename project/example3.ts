@@ -5,11 +5,122 @@ import * as THREE from "three";
 import { loadIfc } from "../buttons";
 import { classificationTree } from "../tables/ClassificationsTree";
 import * as CUI from "@thatopen/ui-obc"
+import { load } from "@loaders.gl/core";
+import { LASLoader } from "@loaders.gl/las";
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 let currentLine: THREE.Line | null = null;
 let lineGeometry: THREE.BufferGeometry | null = null;
 let lineMaterial: THREE.LineBasicMaterial | null = null;
 let measurementDiv: HTMLDivElement | null = null;
+
+class LayerManager {
+  layers: Map<string, { id: string; name: string; visible: boolean; objects: THREE.Object3D[] }> = new Map();
+
+  createLayer(id: string, name: string) {
+    this.layers.set(id, { id, name, visible: true, objects: [] });
+  }
+
+  addToLayer(layerId: string, object: THREE.Object3D) {
+    const layer = this.layers.get(layerId);
+    if (layer) {
+      layer.objects.push(object);
+      this.updateVisibility(layerId);
+    }
+  }
+
+  setLayerVisibility(layerId: string, visible: boolean) {
+    const layer = this.layers.get(layerId);
+    if (layer) {
+      layer.visible = visible;
+      this.updateVisibility(layerId);
+    }
+  }
+
+  private updateVisibility(layerId: string) {
+    const layer = this.layers.get(layerId);
+    if (layer) {
+      layer.objects.forEach(obj => obj.visible = layer.visible);
+    }
+  }
+}
+
+class ElementSearchSystem {
+  private elements: Map<string, any> = new Map();
+
+  addElement(id: string, properties: any) {
+    this.elements.set(id, properties);
+  }
+
+  search(query: string): { [key: string]: any }[] {
+    const results: { [key: string]: any }[] = [];
+    for (const [id, props] of this.elements) {
+      if (this.matchesSearch(props, query.toLowerCase())) {
+        results.push({ id, ...props });
+      }
+    }
+    return results;
+  }
+
+  private matchesSearch(properties: any, query: string): boolean {
+    return Object.values(properties).some(value => 
+      String(value).toLowerCase().includes(query)
+    );
+  }
+}
+
+class AnnotationSystem {
+  private annotations: Map<string, {
+    id: string;
+    position: THREE.Vector3;
+    content: string;
+    element?: HTMLDivElement;
+  }> = new Map();
+  
+  constructor(private container: HTMLElement) {
+    const annotationContainer = document.createElement('div');
+    annotationContainer.className = 'annotation-container';
+    container.appendChild(annotationContainer);
+    this.container = annotationContainer;
+  }
+
+  addAnnotation(position: THREE.Vector3, content: string): string {
+    const id = crypto.randomUUID();
+    const element = document.createElement('div');
+    element.className = 'annotation';
+    element.innerHTML = `
+      <div class="annotation-marker">📌</div>
+      <div class="annotation-content">${content}</div>
+    `;
+    
+    this.container.appendChild(element);
+    this.annotations.set(id, { id, position, content, element });
+    return id;
+  }
+
+  updatePositions(camera: THREE.Camera) {
+    this.annotations.forEach(annotation => {
+      if (annotation.element) {
+        const vector = annotation.position.clone();
+        vector.project(camera);
+        
+        const x = ((vector.x + 1) / 2) * this.container.clientWidth;
+        const y = ((-vector.y + 1) / 2) * this.container.clientHeight;
+        
+        annotation.element.style.transform = `translate(${x}px, ${y}px)`;
+        annotation.element.style.display = vector.z < 1 ? 'block' : 'none';
+      }
+    });
+  }
+
+  clear() {
+    this.annotations.forEach(annotation => {
+      annotation.element?.remove();
+    });
+    this.annotations.clear();
+  }
+}
 
 
 // Initialize line material
@@ -326,6 +437,69 @@ cameraComponent.three.addEventListener('change', () => {
   requestAnimationFrame(updateMapzoom);
 });
 
+const layerManager = new LayerManager();
+const searchSystem = new ElementSearchSystem();
+const annotationSystem = new AnnotationSystem(viewport);
+
+// 4. Add camera presets
+const cameraPresets = {
+  front: () => cameraComponent.controls.setLookAt(0, 0, 10, 0, 0, 0),
+  back: () => cameraComponent.controls.setLookAt(0, 0, -10, 0, 0, 0),
+  top: () => cameraComponent.controls.setLookAt(0, 10, 0, 0, 0, 0),
+  bottom: () => cameraComponent.controls.setLookAt(0, -10, 0, 0, 0, 0),
+  left: () => cameraComponent.controls.setLookAt(-10, 0, 0, 0, 0, 0),
+  right: () => cameraComponent.controls.setLookAt(10, 0, 0, 0, 0, 0)
+};
+
+const newStyles = document.createElement('style');
+newStyles.textContent = `
+  .annotation-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  .annotation {
+    position: absolute;
+    pointer-events: all;
+    cursor: pointer;
+  }
+
+  .annotation-marker {
+    font-size: 24px;
+  }
+
+  .annotation-content {
+    position: absolute;
+    background: white;
+    padding: 8px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    display: none;
+    white-space: nowrap;
+    z-index: 1000;
+  }
+
+  .annotation:hover .annotation-content {
+    display: block;
+  }
+
+  .search-result {
+    padding: 4px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+  }
+
+  .search-result:hover {
+    background: #f5f5f5;
+  }
+`;
+document.head.appendChild(newStyles);
+
 const dimensions = components.get(OBCF.LengthMeasurement);
 dimensions.world = world;
 dimensions.enabled = false;
@@ -592,10 +766,392 @@ layoutStyle.textContent = `
   bim-panel {
     height: 100%;
     transition: width 0.3s ease;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+  }
+
+  bim-panel > div {
+    height: 100%;
+    overflow-y: auto;
+    padding-right: 8px; /* Add some padding for the scrollbar */
+  }
+
+  /* Style the scrollbar */
+  bim-panel::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  bim-panel::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+  }
+
+  bim-panel::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+  }
+
+  bim-panel::-webkit-scrollbar-thumb:hover {
+    background: #555;
   }
 `;
 document.head.appendChild(layoutStyle);
 
+interface MeshAttribute {
+  value: Float32Array | Uint8Array;
+  size?: number;
+  normalized?: boolean;
+  type?: number;
+}
+
+interface LASMesh {
+  header: {
+    vertexCount: number;
+    boundingBox?: {
+      min: number[];
+      max: number[];
+    };
+  };
+  attributes: {
+    [attributeName: string]: MeshAttribute;
+  };
+}
+
+class PointCloudManager {
+  private pointClouds: Map<string, THREE.Points> = new Map();
+  private material: THREE.PointsMaterial;
+
+  constructor(private scene: THREE.Scene) {
+    this.material = new THREE.PointsMaterial({
+      size: 0.5, // Increased default size
+      sizeAttenuation: true,
+      vertexColors: true
+    });
+  }
+
+  async loadLASFile(file: File): Promise<string> {
+    try {
+      const data = await load(file, LASLoader) as LASMesh;
+      
+      if (!data?.header?.vertexCount || !data?.attributes?.POSITION?.value) {
+        throw new Error('Invalid LAS file format');
+      }
+  
+      console.log('Loading point cloud with', data.header.vertexCount, 'points');
+  
+      const positions = data.attributes.POSITION.value as Float32Array;
+      const colors = new Float32Array(data.header.vertexCount * 3);
+      const normalizedPositions = new Float32Array(positions.length);
+      
+      // Find bounds
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  
+      // First pass: find min/max
+      for (let i = 0; i < data.header.vertexCount; i++) {
+        const baseIndex = i * 3;
+        const x = positions[baseIndex];
+        const y = positions[baseIndex + 1];
+        const z = positions[baseIndex + 2];
+  
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        minZ = Math.min(minZ, z);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        maxZ = Math.max(maxZ, z);
+      }
+  
+      // Calculate center and scale
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const centerZ = (minZ + maxZ) / 2;
+      
+      const maxExtent = Math.max(
+        maxX - minX,
+        maxY - minY,
+        maxZ - minZ
+      );
+      
+      const scale = 2 / maxExtent * 20;
+  
+      // Create rotation matrix
+      const rotationMatrix = new THREE.Matrix4();
+      // Rotate 90 degrees around Y axis
+      rotationMatrix.makeRotationY(-Math.PI / 2);
+  
+      // Second pass: normalize positions with rotation
+      for (let i = 0; i < data.header.vertexCount; i++) {
+        const baseIndex = i * 3;
+        
+        // Center the point
+        const x = (positions[baseIndex] - centerX) * scale;
+        const y = (positions[baseIndex + 2] - centerZ) * scale; // Z becomes Y
+        const z = -(positions[baseIndex + 1] - centerY) * scale; // Negated Y becomes Z
+        
+        // Create a vector for the point
+        const point = new THREE.Vector3(x, y, z);
+        // Apply rotation
+        point.applyMatrix4(rotationMatrix);
+        
+        // Store transformed point
+        normalizedPositions[baseIndex] = point.x;
+        normalizedPositions[baseIndex + 1] = point.y;
+        normalizedPositions[baseIndex + 2] = point.z;
+        
+        // Set color based on height
+        const heightValue = positions[baseIndex + 2];
+        const normalizedHeight = (heightValue - minZ) / (maxZ - minZ);
+        const heightColor = new THREE.Color();
+        heightColor.setHSL(0.3 + normalizedHeight * 0.5, 1.0, 0.5);
+        
+        colors[baseIndex] = heightColor.r;
+        colors[baseIndex + 1] = heightColor.g;
+        colors[baseIndex + 2] = heightColor.b;
+  
+        if (data.attributes.intensity?.value) {
+          const intensityArray = data.attributes.intensity.value as Float32Array;
+          const intensity = intensityArray[i] / 65535;
+          colors[baseIndex] *= intensity;
+          colors[baseIndex + 1] *= intensity;
+          colors[baseIndex + 2] *= intensity;
+        }
+      }
+  
+      // Create geometry
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(normalizedPositions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  
+      // Create point cloud object
+      const material = this.material.clone();
+      material.size = 0.05;
+      const pointCloud = new THREE.Points(geometry, material);
+      
+      // Additional transformation for fine-tuning
+      pointCloud.rotation.x = Math.PI / 2; // Rotate 90 degrees around X
+      pointCloud.position.y = 0; // Adjust height if needed
+      
+      const cloudId = `cloud-${crypto.randomUUID()}`;
+      
+      // Add to scene
+      this.scene.add(pointCloud);
+      this.pointClouds.set(cloudId, pointCloud);
+  
+      // Position camera to better view the rotated point cloud
+      cameraComponent.controls.setLookAt(20, 20, 20, 0, 0, 0);
+  
+      console.log('Point cloud added to scene:', cloudId);
+      return cloudId;
+  
+    } catch (error) {
+      console.error('Error loading LAS file:', error);
+      throw error;
+    }
+  }
+  
+  // Add these methods to the PointCloudManager class for interactive adjustment
+  setCloudRotation(id: string, axis: 'x' | 'y' | 'z', angle: number) {
+    const cloud = this.pointClouds.get(id);
+    if (cloud) {
+      cloud.rotation[axis] = angle;
+    }
+  }
+  
+  setCloudPosition(id: string, axis: 'x' | 'y' | 'z', position: number) {
+    const cloud = this.pointClouds.get(id);
+    if (cloud) {
+      cloud.position[axis] = position;
+    }
+  }
+
+  setPointSize(size: number) {
+    this.pointClouds.forEach(cloud => {
+      (cloud.material as THREE.PointsMaterial).size = size;
+    });
+  }
+
+  setPointColor(color: string) {
+    const newColor = new THREE.Color(color);
+    this.pointClouds.forEach(cloud => {
+      (cloud.material as THREE.PointsMaterial).color = newColor;
+    });
+  }
+
+  removePointCloud(id: string) {
+    const cloud = this.pointClouds.get(id);
+    if (cloud) {
+      this.scene.remove(cloud);
+      cloud.geometry.dispose();
+      (cloud.material as THREE.Material).dispose();
+      this.pointClouds.delete(id);
+    }
+  }
+
+  clear() {
+    this.pointClouds.forEach((cloud, id) => {
+      this.removePointCloud(id);
+    });
+  }
+}
+
+const pointCloudManager = new PointCloudManager(world.scene.three);
+
+interface BimFileInput extends HTMLElement {
+  value: string;
+  files?: FileList;
+}
+
+// Modify the lasControls to ensure it returns a proper BUI Component
+const lasControls = () => {
+  let currentCloudId = '';
+  
+  return BUI.html`
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <bim-button label="Load LAS/LAZ File" @click="${() => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.las,.laz';
+        input.style.display = 'none';
+        input.onchange = async (event) => {
+          const target = event.target as HTMLInputElement;
+          if (target.files && target.files[0]) {
+            try {
+              currentCloudId = await pointCloudManager.loadLASFile(target.files[0]);
+              console.log('Point cloud loaded successfully');
+              alert('Point cloud loaded successfully');
+            } catch (error) {
+              console.error('Failed to load point cloud:', error);
+              alert('Failed to load point cloud file. Please check console for details.');
+            }
+          }
+        };
+        document.body.appendChild(input);
+        input.click();
+        document.body.removeChild(input);
+      }}"></bim-button>
+
+      <div style="margin-top: 8px;">
+        <h4 style="margin: 4px 0;">Rotation Adjustment</h4>
+        <bim-number-input
+          slider
+          label="X Rotation"
+          value="${Math.PI/2}"
+          min="0"
+          max="${Math.PI*2}"
+          step="0.1"
+          @change="${({ target }: { target: BUI.NumberInput }) => {
+            if (currentCloudId) {
+              pointCloudManager.setCloudRotation(currentCloudId, 'x', target.value);
+            }
+          }}"
+        ></bim-number-input>
+
+        <bim-number-input
+          slider
+          label="Y Rotation"
+          value="0"
+          min="0"
+          max="${Math.PI*2}"
+          step="0.1"
+          @change="${({ target }: { target: BUI.NumberInput }) => {
+            if (currentCloudId) {
+              pointCloudManager.setCloudRotation(currentCloudId, 'y', target.value);
+            }
+          }}"
+        ></bim-number-input>
+
+        <bim-number-input
+          slider
+          label="Z Rotation"
+          value="0"
+          min="0"
+          max="${Math.PI*2}"
+          step="0.1"
+          @change="${({ target }: { target: BUI.NumberInput }) => {
+            if (currentCloudId) {
+              pointCloudManager.setCloudRotation(currentCloudId, 'z', target.value);
+            }
+          }}"
+        ></bim-number-input>
+      </div>
+
+      <div style="margin-top: 8px;">
+        <h4 style="margin: 4px 0;">Position Adjustment</h4>
+        <bim-number-input
+          slider
+          label="X Position"
+          value="0"
+          min="-50"
+          max="50"
+          step="1"
+          @change="${({ target }: { target: BUI.NumberInput }) => {
+            if (currentCloudId) {
+              pointCloudManager.setCloudPosition(currentCloudId, 'x', target.value);
+            }
+          }}"
+        ></bim-number-input>
+
+        <bim-number-input
+          slider
+          label="Y Position"
+          value="0"
+          min="-50"
+          max="50"
+          step="1"
+          @change="${({ target }: { target: BUI.NumberInput }) => {
+            if (currentCloudId) {
+              pointCloudManager.setCloudPosition(currentCloudId, 'y', target.value);
+            }
+          }}"
+        ></bim-number-input>
+
+        <bim-number-input
+          slider
+          label="Z Position"
+          value="0"
+          min="-50"
+          max="50"
+          step="1"
+          @change="${({ target }: { target: BUI.NumberInput }) => {
+            if (currentCloudId) {
+              pointCloudManager.setCloudPosition(currentCloudId, 'z', target.value);
+            }
+          }}"
+        ></bim-number-input>
+      </div>
+
+      <bim-number-input
+        slider
+        label="Point Size"
+        value="0.05"
+        min="0.01"
+        max="0.5"
+        step="0.01"
+        @change="${({ target }: { target: BUI.NumberInput }) => {
+          pointCloudManager.setPointSize(target.value);
+        }}"
+      ></bim-number-input>
+
+      <bim-color-input
+        label="Point Color"
+        color="#ffffff"
+        @input="${({ target }: { target: BUI.ColorInput }) => {
+          pointCloudManager.setPointColor(target.color);
+        }}"
+      ></bim-color-input>
+
+      <bim-button
+        label="Clear Point Clouds"
+        @click="${() => {
+          pointCloudManager.clear();
+          currentCloudId = '';
+          console.log('Point clouds cleared');
+        }}"
+      ></bim-button>
+    </div>
+  `;
+};
 
 
 const panel = BUI.Component.create(() => {
@@ -644,6 +1200,10 @@ const panel = BUI.Component.create(() => {
             }}">  
           </bim-checkbox>
         </bim-panel-section>
+
+        <bim-panel-section label="Point Cloud">
+        ${lasControls()}
+      </bim-panel-section>
         
         <!-- Add new Measurements section -->
         <bim-panel-section label="Measurements">
@@ -666,6 +1226,32 @@ const panel = BUI.Component.create(() => {
             <bim-label>Press Delete to remove measurement</bim-label>
           </div>
         </bim-panel-section>
+
+        <!-- Add new Navigation section -->
+      <bim-panel-section label="Navigation">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <bim-button label="Front" @click="${cameraPresets.front}"></bim-button>
+          <bim-button label="Back" @click="${cameraPresets.back}"></bim-button>
+          <bim-button label="Top" @click="${cameraPresets.top}"></bim-button>
+          <bim-button label="Bottom" @click="${cameraPresets.bottom}"></bim-button>
+          <bim-button label="Left" @click="${cameraPresets.left}"></bim-button>
+          <bim-button label="Right" @click="${cameraPresets.right}"></bim-button>
+        </div>
+      </bim-panel-section>
+      <!-- Add Annotations section -->
+      <bim-panel-section label="Annotations">
+        <div style="display: flex; gap: 8px;">
+          <bim-button label="Add Annotation" 
+            @click="${() => {
+              viewport.style.cursor = 'crosshair';
+              enableAnnotationMode();
+            }}">
+          </bim-button>
+          <bim-button label="Clear All" 
+            @click="${() => annotationSystem.clear()}">
+          </bim-button>
+        </div>
+      </bim-panel-section>
     <bim-panel-section label="Clipping Planes">
       <div style="display: flex; flex-direction: column; gap: 8px;">
         <!-- X-Axis Controls -->
@@ -772,17 +1358,7 @@ const panel = BUI.Component.create(() => {
       ${classificationsTree}
     </bim-panel-section>
     <bim-panel-section collapsed label="Minimap Controls">
-      <bim-checkbox checked="true" label="Enabled" 
-        @change="${({ target }: { target: BUI.Checkbox }) => {
-          map.enabled = target.value;
-        }}">  
-      </bim-checkbox>
       
-      <bim-checkbox checked="true" label="Visible" 
-        @change="${({ target }: { target: BUI.Checkbox }) => {
-          map.config.visible = target.value;
-        }}">  
-      </bim-checkbox>
       
       <bim-checkbox checked label="Lock rotation" 
         @change="${({ target }: { target: BUI.Checkbox }) => {
@@ -824,6 +1400,49 @@ const panel = BUI.Component.create(() => {
     </bim-panel-section>
    </bim-panel> 
   `;
+});
+
+
+
+let annotationMode = false;
+
+function enableAnnotationMode() {
+  annotationMode = true;
+  
+  const handleClick = (event: MouseEvent) => {
+    if (!annotationMode) {
+      viewport.removeEventListener('click', handleClick);
+      return;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / viewport.clientWidth) * 2 - 1;
+    const y = -((event.clientY - rect.top) / viewport.clientHeight) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), world.camera.three);
+    const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+
+    if (intersects.length > 0) {
+      const point = intersects[0].point;
+      const content = prompt('Enter annotation text:');
+      if (content) {
+        annotationSystem.addAnnotation(point, content);
+      }
+    }
+
+    annotationMode = false;
+    viewport.style.cursor = 'default';
+    viewport.removeEventListener('click', handleClick);
+  };
+
+  viewport.addEventListener('click', handleClick);
+}
+
+
+// Add to your render loop
+rendererComponent.onBeforeUpdate.add(() => {
+  annotationSystem.updatePositions(world.camera.three);
 });
 
 // Setup main application layout
