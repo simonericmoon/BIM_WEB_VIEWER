@@ -878,6 +878,7 @@ interface LASMesh {
   };
 }
 
+
 class PointCloudManager {
   private pointClouds: Map<string, THREE.Points> = new Map();
   private material: THREE.PointsMaterial;
@@ -1214,9 +1215,43 @@ const lasControls = () => {
   `;
 };
 
-
 const panel = BUI.Component.create(() => {
   const [loadIfcBtn] = loadIfc({ components });
+
+  // Get the server IP address based on the current window location
+  const serverIP = '141.64.207.151'
+  const serverPort = "8000"; // You can make this configurable if needed
+  const SERVER_URL = `https://${serverIP}:${serverPort}`;
+
+// Also add error handling for certificate issues
+  const loadDefaultIfc = async () => {
+    try {
+      const ifcLoader = components.get(OBC.IfcLoader);
+      await ifcLoader.setup();
+
+      console.log('Attempting to fetch from: /api/default-ifc/');
+      const file = await fetch('/api/default-ifc/');
+      
+      if (!file.ok) {
+        const errorData = await file.json();
+        throw new Error(errorData.detail || 'Failed to fetch IFC file');
+      }
+
+      const data = await file.arrayBuffer();
+      const buffer = new Uint8Array(data);
+      const fragmentsGroup = await ifcLoader.load(buffer);
+      world.scene.three.add(fragmentsGroup);
+      console.log('Default IFC model loaded successfully from FastAPI server');
+    } catch (error) {
+      console.error('Failed to load default IFC:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        type: error.name
+      });
+      alert(`Failed to load default IFC: ${error.message}`);
+    }
+  };  
 
   return BUI.html`
     <div style="position: relative;">
@@ -1224,6 +1259,10 @@ const panel = BUI.Component.create(() => {
         <div style="height: 100%; overflow-y: auto; padding-right: 8px;">
           <bim-panel-section label="Import">
             ${loadIfcBtn}
+            <!-- Add the new button here -->
+            <bim-button label="Load Default IFC" 
+              @click="${() => loadDefaultIfc()}">
+            </bim-button>
           </bim-panel-section>
         <bim-panel-section label="Interaction Settings">
           <bim-checkbox checked="true" label="Show Properties & Zoom" 

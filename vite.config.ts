@@ -6,7 +6,16 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
-    https: {} // Changed from true to empty object to satisfy TypeScript
+    https: {}, // For HTTPS
+    proxy: {
+      // Proxy any requests to your FastAPI server
+      '/api': {
+        target: 'https://141.64.207.151:8000',
+        changeOrigin: true,
+        secure: false, // Required since we're using a self-signed certificate
+        rewrite: (path) => path.replace(/^\/api/, '')
+      }
+    }
   },
   plugins: [basicSsl()],
   root: './project',

@@ -20,3 +20,5 @@ Suchleiste
 Koordinaten abgreifen (!?)
 
 
+openssl req -x509 -newkey rsa:4096 -keyout private_key.pem -out certificate.pem -days 365 -nodes
+
