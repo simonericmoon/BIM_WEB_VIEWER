@@ -750,9 +750,13 @@ collapseButtonStyle.textContent = `
 document.head.appendChild(collapseButtonStyle);
 
 const app = document.createElement("bim-grid");
-app.style.width = '100vw';
+app.style.width = '100%';
 app.style.height = '100vh';
+app.style.position = 'absolute';
+app.style.top = '0';
+app.style.left = '0';
 app.style.display = 'grid';
+app.style.overflow = 'hidden';
 
 // Add styles for viewport and panel
 const layoutStyle = document.createElement('style');
@@ -764,39 +768,41 @@ layoutStyle.textContent = `
   }
   
   bim-panel {
-    height: 100%;
+    height: 100vh;
     transition: width 0.3s ease;
     position: relative;
+    overflow-y: auto !important;
   }
 
   bim-panel > div {
-    height: 100%;
-    overflow-y: auto;
+    height: auto !important;
+    overflow-y: visible !important;
     padding-right: 8px;
+    padding-bottom: 20px;
   }
 
-  /* Style the scrollbar */
-  bim-panel > div::-webkit-scrollbar {
+  /* Customize the scrollbar */
+  bim-panel::-webkit-scrollbar {
     width: 8px;
   }
 
-  bim-panel > div::-webkit-scrollbar-track {
+  bim-panel::-webkit-scrollbar-track {
     background: #f1f1f1;
     border-radius: 4px;
   }
 
-  bim-panel > div::-webkit-scrollbar-thumb {
+  bim-panel::-webkit-scrollbar-thumb {
     background: #888;
     border-radius: 4px;
   }
 
-  bim-panel > div::-webkit-scrollbar-thumb:hover {
+  bim-panel::-webkit-scrollbar-thumb:hover {
     background: #555;
   }
 
   .collapse-button {
-    position: absolute;
-    right: -25px;
+    position: fixed;
+    right: calc(100% - 23rem - 25px);
     top: 10px;
     background: white;
     border: 1px solid #ddd;
@@ -810,7 +816,11 @@ layoutStyle.textContent = `
     justify-content: center;
     font-size: 14px;
     box-shadow: 2px 0 4px rgba(0,0,0,0.2);
-    transition: background-color 0.2s;
+    transition: background-color 0.2s, right 0.3s ease;
+  }
+
+  .collapse-button.collapsed {
+    right: calc(100% - 25px);
   }
 
   .collapse-button:hover {
@@ -818,6 +828,35 @@ layoutStyle.textContent = `
   }
 `;
 document.head.appendChild(layoutStyle);
+
+const collapseButtonClickHandler = (e: MouseEvent) => {
+  const panelElement = document.querySelector('bim-panel');
+  const gridElement = document.querySelector('bim-grid');
+  const button = e.currentTarget as HTMLButtonElement;
+  
+  if (!panelElement || !gridElement) {
+    console.error('Required elements not found');
+    return;
+  }
+
+  const isCollapsed = panelElement.style.width === '0px';
+  
+  if (isCollapsed) {
+    panelElement.style.width = '23rem';
+    button.innerHTML = '◀';
+    button.classList.remove('collapsed');
+    gridElement.style.gridTemplateColumns = '23rem 1fr';
+  } else {
+    panelElement.style.width = '0px';
+    button.innerHTML = '▶';
+    button.classList.add('collapsed');
+    gridElement.style.gridTemplateColumns = '0 1fr';
+  }
+  
+  window.dispatchEvent(new Event('resize'));
+  rendererComponent.resize();
+  cameraComponent.updateAspect();
+};
 
 interface MeshAttribute {
   value: Float32Array | Uint8Array;
@@ -1180,8 +1219,8 @@ const panel = BUI.Component.create(() => {
   const [loadIfcBtn] = loadIfc({ components });
 
   return BUI.html`
-   <div style="position: relative; height: 100%; width: 100%;">
-     <bim-panel label="Model Inspector">
+    <div style="position: relative;">
+      <bim-panel label="Model Inspector">
         <div style="height: 100%; overflow-y: auto; padding-right: 8px;">
           <bim-panel-section label="Import">
             ${loadIfcBtn}
@@ -1396,31 +1435,7 @@ const panel = BUI.Component.create(() => {
       </div>
     </bim-panel-section>
    </bim-panel>
-   <button class="collapse-button" @click="${(e: MouseEvent) => {
-    const panelElement = document.querySelector('bim-panel');
-    const gridElement = document.querySelector('bim-grid');
-    const button = e.currentTarget as HTMLButtonElement;
-    
-    if (!panelElement || !gridElement) {
-      console.error('Required elements not found');
-      return;
-    }
-  
-    const isCollapsed = panelElement.style.width === '0px';
-    
-    if (isCollapsed) {
-      panelElement.style.width = '23rem';
-      button.innerHTML = '◀';
-      gridElement.style.gridTemplateColumns = '23rem 1fr';
-    } else {
-      panelElement.style.width = '0px';
-      button.innerHTML = '▶';
-      gridElement.style.gridTemplateColumns = '0 1fr';
-    }
-    
-    window.dispatchEvent(new Event('resize'));
-    rendererComponent.resize();
-    cameraComponent.updateAspect();
+   <button class="collapse-button" @click="${collapseButtonClickHandler}">◀</button>
   }}">◀</button>
 </div>
   `;
