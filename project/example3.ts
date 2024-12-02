@@ -11,9 +11,15 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 let currentLine: THREE.Line | null = null;
-let lineGeometry: THREE.BufferGeometry | null = null;
+//let lineGeometry: THREE.BufferGeometry | null = null;
 let lineMaterial: THREE.LineBasicMaterial | null = null;
 let measurementDiv: HTMLDivElement | null = null;
+
+// Add new imports for teleportation
+const TELEPORT_LINE_POINTS = 20;
+//let teleportLine: THREE.Line;
+let isPointerDown = false;
+
 
 class LayerManager {
   layers: Map<string, { id: string; name: string; visible: boolean; objects: THREE.Object3D[] }> = new Map();
@@ -124,14 +130,14 @@ class AnnotationSystem {
 
 
 // Initialize line material
-lineMaterial = new THREE.LineBasicMaterial({ 
-  color: 0xff0000,
-  depthTest: false,
-  depthWrite: false,
-  transparent: true,
-  opacity: 1.0,
-  linewidth: 3
-});lineGeometry = new THREE.BufferGeometry();
+// lineMaterial = new THREE.LineBasicMaterial({ 
+//   color: 0xff0000,
+//   depthTest: false,
+//   depthWrite: false,
+//   transparent: true,
+//   opacity: 1.0,
+//   linewidth: 3
+// });lineGeometry = new THREE.BufferGeometry();
 
 // Add these declarations at the top
 let currentTube: THREE.Mesh | null = null;
@@ -241,6 +247,114 @@ world.scene.three.background = null;
 // Setup camera after renderer
 const cameraComponent = new OBC.SimpleCamera(components);
 world.camera = cameraComponent;
+
+//ADD VR CAPABILITY
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+const vrButton = VRButton.createButton(rendererComponent.three);
+vrButton.style.position = 'absolute';
+vrButton.style.bottom = '20px';
+vrButton.style.left = '20px';
+vrButton.style.zIndex = '1000';
+viewport.appendChild(vrButton);
+
+rendererComponent.three.xr.enabled = true;
+
+// VR Setup
+const dolly = new THREE.Group();
+dolly.position.y = 1.6;
+world.scene.three.add(dolly);
+
+// Controller setup
+const controllerModelFactory = new XRControllerModelFactory();
+
+const controller1 = rendererComponent.three.xr.getController(0);
+const controller2 = rendererComponent.three.xr.getController(1);
+dolly.add(controller1);
+dolly.add(controller2);
+
+const grip1 = rendererComponent.three.xr.getControllerGrip(0);
+const grip2 = rendererComponent.three.xr.getControllerGrip(1);
+grip1.add(controllerModelFactory.createControllerModel(grip1));
+grip2.add(controllerModelFactory.createControllerModel(grip2));
+dolly.add(grip1);
+dolly.add(grip2);
+
+// Setup BIM interaction
+const raycaster = new THREE.Raycaster();
+const tempMatrix = new THREE.Matrix4();
+
+function getIntersections(controller) {
+  tempMatrix.identity().extractRotation(controller.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+  
+  // Filter out non-BIM objects
+  const intersects = raycaster.intersectObjects(world.scene.three.children, true);
+  return intersects.filter(intersect => intersect.object.userData.modelID);
+}
+
+// Movement and interaction
+let zoomSpeed = 0.1;
+let isZooming = false;
+
+controller1.addEventListener('selectstart', onSelectStart);
+controller2.addEventListener('selectstart', onSelectStart);
+
+controller1.addEventListener('squeezestart', () => isZooming = true);
+controller1.addEventListener('squeezeend', () => isZooming = false);
+controller2.addEventListener('squeezestart', () => isZooming = true);
+controller2.addEventListener('squeezeend', () => isZooming = false);
+
+function onSelectStart(event) {
+  const controller = event.target;
+  const intersections = getIntersections(controller);
+  
+  if (intersections.length > 0) {
+    const intersection = intersections[0];
+    const modelID = intersection.object.userData.modelID;
+    const fragmentID = intersection.object.userData.fragmentID;
+    
+    if (modelID && fragmentID) {
+      highlighter.highlight(modelID, fragmentID);
+    }
+  }
+}
+
+// Animation loop
+rendererComponent.three.setAnimationLoop(() => {
+  const session = rendererComponent.three.xr.getSession();
+  
+  if (session && isZooming) {
+    session.inputSources.forEach(source => {
+      if (source.gamepad) {
+        const zValue = source.gamepad.buttons[1].value; // Grip button value
+        if (zValue > 0) {
+          const forward = new THREE.Vector3(0, 0, -zValue * zoomSpeed);
+          forward.applyQuaternion(dolly.quaternion);
+          dolly.position.add(forward);
+        }
+      }
+    });
+  }
+  
+  rendererComponent.three.render(world.scene.three, world.camera.three);
+});
+
+// Controller visual helpers
+const ray = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, -5)
+  ]),
+  new THREE.LineBasicMaterial({ color: 0x0000ff })
+);
+
+controller1.add(ray.clone());
+controller2.add(ray.clone());
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // Initialize components
 components.init();
@@ -1215,55 +1329,97 @@ const lasControls = () => {
   `;
 };
 
+const flushDefaultIfc = async () => {
+  try {
+    const response = await fetch('/api/flush-default-ifc/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache'
+      },
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'Failed to flush IFC file');
+    }
+
+    const result = await response.json();
+    
+    // Clear the current scene
+    world.scene.three.children
+      .filter(child => child.type === 'Group')
+      .forEach(child => {
+        world.scene.three.remove(child);
+      });
+    
+    console.log('Server flushed successfully:', result.message);
+    alert('Server flushed successfully and scene cleared');
+  } catch (error) {
+    console.error('Failed to flush server:', error);
+    alert(`Failed to flush server: ${error.message}`);
+  }
+};
+
 const panel = BUI.Component.create(() => {
   const [loadIfcBtn] = loadIfc({ components });
 
   // Get the server IP address based on the current window location
-  const serverIP = '141.64.207.151'
+  const serverIP = '192.168.9.157'
   const serverPort = "8000"; // You can make this configurable if needed
   const SERVER_URL = `https://${serverIP}:${serverPort}`;
 
 // Also add error handling for certificate issues
-  const loadDefaultIfc = async () => {
-    try {
-      const ifcLoader = components.get(OBC.IfcLoader);
-      await ifcLoader.setup();
-
-      console.log('Attempting to fetch from: /api/default-ifc/');
-      const file = await fetch('/api/default-ifc/');
-      
-      if (!file.ok) {
-        const errorData = await file.json();
-        throw new Error(errorData.detail || 'Failed to fetch IFC file');
+const loadDefaultIfc = async () => {
+  try {
+    console.log('Attempting to fetch from: /api/default-ifc/');
+    const file = await fetch('/api/default-ifc/', {
+      cache: 'no-store', // Prevent caching
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
       }
-
-      const data = await file.arrayBuffer();
-      const buffer = new Uint8Array(data);
-      const fragmentsGroup = await ifcLoader.load(buffer);
-      world.scene.three.add(fragmentsGroup);
-      console.log('Default IFC model loaded successfully from FastAPI server');
-    } catch (error) {
-      console.error('Failed to load default IFC:', error);
-      console.error('Error details:', {
-        message: error.message,
-        stack: error.stack,
-        type: error.name
-      });
-      alert(`Failed to load default IFC: ${error.message}`);
+    });
+    
+    if (!file.ok) {
+      if (file.status === 404) {
+        alert('No default IFC file exists on the server. Please upload one first.');
+        return;
+      }
+      const errorData = await file.json();
+      throw new Error(errorData.detail || 'Failed to fetch IFC file');
     }
-  };  
+
+    const data = await file.arrayBuffer();
+    const buffer = new Uint8Array(data);
+    const fragmentsGroup = await ifcLoader.load(buffer);
+    world.scene.three.add(fragmentsGroup);
+    console.log('Default IFC model loaded successfully from FastAPI server');
+  } catch (error) {
+    console.error('Failed to load default IFC:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      type: error.name
+    });
+    alert(`Failed to load default IFC: ${error.message}`);
+  }
+};
 
   return BUI.html`
     <div style="position: relative;">
       <bim-panel label="Model Inspector">
         <div style="height: 100%; overflow-y: auto; padding-right: 8px;">
-          <bim-panel-section label="Import">
-            ${loadIfcBtn}
-            <!-- Add the new button here -->
-            <bim-button label="Load Default IFC" 
-              @click="${() => loadDefaultIfc()}">
-            </bim-button>
-          </bim-panel-section>
+        <bim-panel-section label="Import">
+        ${loadIfcBtn}
+        <bim-button label="Load Default IFC" 
+          @click="${() => loadDefaultIfc()}">
+        </bim-button>
+        <bim-button label="Flush Server" 
+          @click="${() => flushDefaultIfc()}"
+          style="background-color: #ff4444; color: white;">
+        </bim-button>
+      </bim-panel-section>
         <bim-panel-section label="Interaction Settings">
           <bim-checkbox checked="true" label="Show Properties & Zoom" 
             @change="${({ target }: { target: BUI.Checkbox }) => {
@@ -1473,9 +1629,15 @@ const panel = BUI.Component.create(() => {
         </bim-number-input>
       </div>
     </bim-panel-section>
+    <bim-button
+          label="Enter VR"
+          @click="${() => {
+            rendererComponent.three.xr.enterVR();
+          }}">
+    </bim-button>
    </bim-panel>
    <button class="collapse-button" @click="${collapseButtonClickHandler}">◀</button>
-  }}">◀</button>
+  </button>
 </div>
   `;
 });

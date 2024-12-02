@@ -50,8 +50,8 @@ async def root():
     return {
         "message": "IFC File Server",
         "endpoints": {
-            "upload": f"http://{local_ip}:8000/upload-default-ifc/",
-            "download": f"http://{local_ip}:8000/default-ifc/",
+            "upload": f"https://{local_ip}:8000/upload-default-ifc/",
+            "download": f"https://{local_ip}:8000/default-ifc/",
         },
         "status": "default.ifc exists" if DEFAULT_IFC_PATH.exists() else "No default IFC file"
     }
@@ -73,29 +73,48 @@ async def upload_default_ifc(file: UploadFile = File(...)):
         local_ip = get_local_ip()
         return {
             "message": "Default IFC file uploaded successfully",
-            "access_url": f"http://{local_ip}:8000/default-ifc/"
+            "access_url": f"https://{local_ip}:8000/default-ifc/"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 
+@app.post("/flush-default-ifc/")
+async def flush_default_ifc():
+    """Delete the default IFC file from the server"""
+    try:
+        if DEFAULT_IFC_PATH.exists():
+            os.remove(DEFAULT_IFC_PATH)
+            # Verify the file is actually deleted
+            if DEFAULT_IFC_PATH.exists():
+                raise HTTPException(status_code=500, detail="Failed to delete file")
+            return {"message": "Default IFC file deleted successfully"}
+        return {"message": "No default IFC file exists"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+        
 @app.get("/default-ifc/")
 async def get_default_ifc():
     """Download the default IFC file"""
     if not DEFAULT_IFC_PATH.exists():
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail="No default IFC file found. Please upload one first."
         )
-    
     try:
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
         return FileResponse(
             path=DEFAULT_IFC_PATH,
             media_type="application/octet-stream",
-            filename="default.ifc"
+            filename="default.ifc",
+            headers=headers
         )
     except Exception as e:
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Error accessing file: {str(e)}"
         )
 

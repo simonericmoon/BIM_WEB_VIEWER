@@ -10,7 +10,7 @@ export default defineConfig({
     proxy: {
       // Proxy any requests to your FastAPI server
       '/api': {
-        target: 'https://141.64.207.151:8000',
+        target: 'https://192.168.9.157:8000',
         changeOrigin: true,
         secure: false, // Required since we're using a self-signed certificate
         rewrite: (path) => path.replace(/^\/api/, '')
