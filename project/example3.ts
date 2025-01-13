@@ -11,7 +11,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 let currentLine: THREE.Line | null = null;
-//let lineGeometry: THREE.BufferGeometry | null = null;
+let lineGeometry: THREE.BufferGeometry | null = null;
 let lineMaterial: THREE.LineBasicMaterial | null = null;
 let measurementDiv: HTMLDivElement | null = null;
 
@@ -129,15 +129,15 @@ class AnnotationSystem {
 }
 
 
-// Initialize line material
-// lineMaterial = new THREE.LineBasicMaterial({ 
-//   color: 0xff0000,
-//   depthTest: false,
-//   depthWrite: false,
-//   transparent: true,
-//   opacity: 1.0,
-//   linewidth: 3
-// });lineGeometry = new THREE.BufferGeometry();
+//Initialize line material
+lineMaterial = new THREE.LineBasicMaterial({ 
+  color: 0xff0000,
+  depthTest: false,
+  depthWrite: false,
+  transparent: true,
+  opacity: 1.0,
+  linewidth: 3
+});lineGeometry = new THREE.BufferGeometry();
 
 // Add these declarations at the top
 let currentTube: THREE.Mesh | null = null;
