@@ -25,6 +25,8 @@ A powerful web-based BIM (Building Information Modeling) viewer that combines IF
 - Backend:
   - FastAPI (Python)
   - SSL for secure communication
+  - socket
+  - laspy für transforming pointclouds into las
 
 ## Prerequisites
 - Node.js (v14 or higher)
